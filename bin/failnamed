@@ -1,0 +1,454 @@
+#! /usr/bin/env ruby
+# Copyleft meh. [http://meh.doesntexist.org | meh@paranoici.org]
+#
+# This file is part of failnamed.
+#
+# failnamed is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# failnamed is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with failnamed. If not, see <http://www.gnu.org/licenses/>.
+
+require 'faildns/server'
+require 'faildns/client'
+require 'optimus'
+
+require 'failnamed/config'
+require 'failnamed/cache'
+
+opt = Optimus.new {|o|
+  o.set(
+    :type => :numeric,
+
+    :long  => 'port',
+    :short => 'p',
+
+    :default => 53
+  )
+
+  o.set(
+    :type => :string,
+
+    :long  => 'host',
+    :short => 'h',
+
+    :default => '0.0.0.0'
+  )
+
+  o.set(
+    :type => :string,
+
+    :long  => 'configuration',
+    :short => 'c'
+  )
+}
+
+$config = DNS::Named::Config.new opt.params[:c]
+
+$server = DNS::Server.new {|s|
+    s.options[:host] = $config.bind.host || opt.params[:host]
+    s.options[:port] = $config.bind.port || opt.params[:port]
+}
+
+$client = DNS::Client.new {|c|
+  $config.forwarding.each {|server|
+    c.servers << server
+  }
+}
+
+$data = {}
+
+$data[:options] = {
+  :ttl => ($config.misc.ttl || 3600).to_i
+}
+
+$data[:cache] = DNS::Named::Cache.new
+
+$data[:semaphore] = Mutex.new
+
+module Commands
+  module IN
+    def self.A (message)
+      def self.resolve (name)
+        if !$data[:cache][name].exists? && $data[:cache][name].valid?
+          return false
+        end
+
+        if $data[:cache][name].valid? :A
+          return [
+            ((tmp = $data[:cache][name].data(:A)).length > 0 ?
+                tmp.map {|c| DNS::Named::Cacheable.new(c.value.to_s, c.ttl) } 
+              : nil
+            ),
+
+            ((tmp = $data[:cache][name].data(:CNAME).first) ?
+              DNS::Named::Cacheable.new(tmp.value.to_s, tmp.ttl)
+              : nil
+            )]
+        else
+          $data[:cache][name].clear :A
+        end
+
+        ips   = nil
+        cname = nil
+
+        domain = $config.domains.find {|domain|
+          domain.match(name)
+        }
+
+        if domain
+          tmp = domain.ips.select {|ip| ip.version == 4}.map {|ip| DNS::Named::Cacheable.new(ip.to_s, domain.ttl)}
+
+          if !tmp.empty?
+            tmp.each {|ip|
+              $data[:cache][name].update DNS::ResourceRecord.new {|rr|
+                rr.name  = name
+                rr.class = :IN
+                rr.type  = :A
+
+                rr.ttl = ip.ttl
+
+                rr.data = DNS::ResourceRecord::IN::A.new(ip.value)
+              }
+            }
+
+            ips = tmp
+          end
+
+          if !domain.addresses.empty?
+            ips = []
+
+            domain.addresses.each {|address|
+              tmp, = self.resolve(address)
+
+              if tmp
+                ips = ips.concat tmp.flatten.each {|ip|
+                  ip.ttl = domain.ttl
+                }
+              end
+            }
+          end
+
+          if domain.name
+            cname = DNS::Named::Cacheable.new($data[:cache][name].update(DNS::ResourceRecord.new {|rr|
+              rr.name  = name
+              rr.class = :IN
+              rr.type  = :CNAME
+
+              rr.ttl = domain.ttl
+
+              rr.data = DNS::ResourceRecord::IN::CNAME.new(domain.name)
+            }).data.to_s, domain.ttl)
+          end
+        else
+          response = $client.query(DNS::Question.new {|q|
+            q.name = name
+
+            q.class = :IN
+            q.type  = :A
+          }, { :limit => 1, :status => [:NOERROR, :NXDOMAIN] }).first.last.message rescue nil
+
+          if (response.header.status == :NXDOMAIN rescue false)
+            ips = false
+          else
+            $data[:cache][name].checked! :A
+
+            ips = response.answers.select {|rr|
+              rr.type == :A
+            }.map {|rr|
+              $data[:cache][name].update rr
+
+              DNS::Named::Cacheable.new(rr.data.to_s, rr.ttl)
+            }
+
+            cname = (tmp = response.answers.find {|rr|
+              if rr.type == :CNAME
+                $data[:cache][name].update rr
+                true
+              else
+                false
+              end
+            }) ? DNS::Named::Cacheable.new(tmp.data.to_s, tmp.ttl) : nil
+          end
+        end
+
+        if ips == false
+          $data[:cache][name].not_exists!
+        else
+          $data[:cache][name].exists!
+        end
+
+        return ips, cname
+      end
+
+      question = message.questions.first
+
+      ips, cname = self.resolve(question.name.to_s)
+
+      if ips == false
+        DNS::Message.new(
+          DNS::Header.new {|h|
+            h.id = message.header.id
+
+            h.type  = :RESPONSE
+            h.class = :QUERY
+
+            h.status = :NXDOMAIN
+          },
+
+          [question]
+        )
+      elsif ips == nil
+        DNS::Message.new(
+          DNS::Header.new {|h|
+            h.id = message.header.id
+
+            h.type  = :RESPONSE
+            h.class = :QUERY
+          },
+
+          [question]
+        )
+      else
+        DNS::Message.new(
+          DNS::Header.new {|h|
+            h.id = message.header.id
+
+            h.type  = :RESPONSE
+            h.class = :QUERY
+          },
+
+          [question],
+
+          ips.map {|ip|
+            DNS::ResourceRecord.new {|rr|
+              rr.name  = question.name
+              rr.class = :IN
+              rr.type  = :A
+
+              rr.ttl = ip.ttl
+
+              rr.data = DNS::ResourceRecord::IN::A.new(ip.value)
+            }
+          }.concat(cname ? [DNS::ResourceRecord.new {|rr|
+            rr.name  = question.name
+            rr.class = :IN
+            rr.type  = :CNAME
+
+            rr.ttl = cname.ttl
+
+            rr.data = DNS::ResourceRecord::IN::CNAME.new(cname.value)
+          }] : [])
+        )
+      end
+    end
+
+    def self.AAAA (message)
+      def self.resolve (name)
+        if !$data[:cache][name].exists? && $data[:cache][name].valid?
+          return false
+        end
+
+        if $data[:cache][name].valid? :AAAA
+          return [
+            ((tmp = $data[:cache][name].data(:AAAA)).length > 0 ?
+                tmp.map {|c| DNS::Named::Cacheable.new(c.value.to_s, c.ttl) } 
+              : nil
+            ),
+            
+            ((tmp = $data[:cache][name].data(:CNAME).first) ?
+                DNS::Named::Cacheable.new(tmp.value.to_s, tmp.ttl)
+              : nil
+            )]
+        else
+          $data[:cache][name].clear :AAAA
+        end
+
+        ips   = nil
+        cname = nil
+
+        domain = $config.domains.find {|domain|
+          domain.match(name)
+        }
+
+        if domain
+          tmp = domain.ips.select {|ip| ip.version == 4}.map {|ip| DNS::Named::Cacheable.new(ip.to_s, domain.ttl)}
+
+          if !tmp.empty?
+            tmp.each {|ip|
+              $data[:cache][name].update DNS::ResourceRecord.new {|rr|
+                rr.name  = name
+                rr.class = :IN
+                rr.type  = :AAAA
+
+                rr.ttl = ip.ttl
+
+                rr.data = DNS::ResourceRecord::IN::AAAA.new(ip.value)
+              }
+            }
+
+            ips = tmp
+          end
+
+          if !domain.addresses.empty?
+            ips = []
+
+            domain.addresses.each {|address|
+              tmp = self.resolve(address)
+
+              if tmp
+                ips = ips.concat tmp.each {|ip|
+                  ip.ttl = domain.ttl
+                }
+              end
+            }
+          end
+
+          if domain.name
+            cname = DNS::Named::Cacheable.new(DNS::ResourceRecord.new {|rr|
+              rr.name  = name
+              rr.class = :IN
+              rr.type  = :CNAME
+
+              rr.ttl = domain.ttl
+
+              rr.data = DNS::ResourceRecord::IN::CNAME.new(domain.name)
+            }.data.to_s, domain.ttl)
+          end
+        else
+          response = $client.query(DNS::Question.new {|q|
+            q.name = name
+
+            q.class = :IN
+            q.type  = :AAAA
+          }, { :limit => 1, :status => [:NOERROR, :NXDOMAIN] }).first.last.message rescue nil
+
+          if (response.header.status == :NXDOMAIN rescue false)
+            ips = false
+          else
+            $data[:cache][name].checked! :AAAA
+
+            ips = response.answers.select {|rr|
+              rr.type == :AAAA
+            }.map {|rr|
+              $data[:cache][name].update rr
+
+              DNS::Named::Cacheable.new(rr.data.to_s, rr.ttl)
+            }
+
+            cname = (tmp = response.answers.find {|rr|
+              if rr.type == :CNAME
+                $data[:cache][name].update rr
+                true
+              else
+                false
+              end
+            }) ? DNS::Named::Cacheable.new(tmp.data.to_s, tmp.ttl) : nil
+          end
+        end
+
+        if ips == false
+          $data[:cache][name].not_exists!
+        else
+          $data[:cache][name].exists!
+        end
+
+        return ips, cname
+      end
+
+      question = message.questions.first
+
+      ips, cname = self.resolve(question.name.to_s)
+
+      if ips == false
+        DNS::Message.new(
+          DNS::Header.new {|h|
+            h.id = message.header.id
+
+            h.type  = :RESPONSE
+            h.class = :QUERY
+
+            h.status = :NXDOMAIN
+          },
+
+          [question]
+        )
+      elsif ips == nil
+        DNS::Message.new(
+          DNS::Header.new {|h|
+            h.id = message.header.id
+
+            h.type  = :RESPONSE
+            h.class = :QUERY
+          },
+
+          [question]
+        )
+      else
+        DNS::Message.new(
+          DNS::Header.new {|h|
+            h.id = message.header.id
+
+            h.type  = :RESPONSE
+            h.class = :QUERY
+          },
+
+          [question],
+
+          ips.map {|ip|
+            DNS::ResourceRecord.new {|rr|
+              rr.name  = question.name
+              rr.class = :IN
+              rr.type  = :AAAA
+
+              rr.ttl = ip.ttl
+
+              rr.data = DNS::ResourceRecord::IN::AAAA.new(ip.value)
+            }
+          }.concat(cname ? [DNS::ResourceRecord.new {|rr|
+            rr.name  = question.name
+            rr.class = :IN
+            rr.type  = :CNAME
+
+            rr.ttl = cname.ttl
+
+            rr.data = DNS::ResourceRecord::IN::CNAME.new(cname.value)
+          }] : [])
+        )
+      end
+    end
+  end
+end
+
+$server.register :input, lambda {|socket, message|
+  question = message.questions.first
+  method   = Commands.const_get(question.class.to_sym).method(question.type.to_sym) rescue nil
+
+  if !method
+    socket.send DNS::Message.new(
+      DNS::Header.new {|h|
+        h.id = message.header.id
+
+        h.type  = :RESPONSE
+        h.class = :QUERY
+
+        h.status = :NOTIMP
+      },
+
+      [question]
+    )
+
+    return
+  end
+
+  socket.send method.call(message)
+}
+
+$server.start

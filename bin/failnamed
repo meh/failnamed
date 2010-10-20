@@ -83,10 +83,9 @@ module Commands
 
         if $data[:cache][name].valid? :A
           return [
-            ((tmp = $data[:cache][name].data(:A)).length > 0 ?
-                tmp.map {|c| DNS::Named::Cacheable.new(c.value.to_s, c.ttl) } 
-              : nil
-            ),
+            $data[:cache][name].data(:A).map {|c|
+              DNS::Named::Cacheable.new(c.value.to_s, c.ttl)
+            },
 
             ((tmp = $data[:cache][name].data(:CNAME).first) ?
               DNS::Named::Cacheable.new(tmp.value.to_s, tmp.ttl)
@@ -96,7 +95,7 @@ module Commands
           $data[:cache][name].clear :A
         end
 
-        ips   = nil
+        ips   = []
         cname = nil
 
         domain = $config.domains.find {|domain|
@@ -171,9 +170,8 @@ module Commands
             cname = (tmp = response.answers.find {|rr|
               if rr.type == :CNAME
                 $data[:cache][name].update rr
+
                 true
-              else
-                false
               end
             }) ? DNS::Named::Cacheable.new(tmp.data.to_s, tmp.ttl) : nil
           end
@@ -201,17 +199,6 @@ module Commands
             h.class = :QUERY
 
             h.status = :NXDOMAIN
-          },
-
-          [question]
-        )
-      elsif ips == nil
-        DNS::Message.new(
-          DNS::Header.new {|h|
-            h.id = message.header.id
-
-            h.type  = :RESPONSE
-            h.class = :QUERY
           },
 
           [question]
@@ -258,20 +245,19 @@ module Commands
 
         if $data[:cache][name].valid? :AAAA
           return [
-            ((tmp = $data[:cache][name].data(:AAAA)).length > 0 ?
-                tmp.map {|c| DNS::Named::Cacheable.new(c.value.to_s, c.ttl) } 
-              : nil
-            ),
-            
+            $data[:cache][name].data(:AAAA).map {|c|
+              DNS::Named::Cacheable.new(c.value.to_s, c.ttl)
+            },
+
             ((tmp = $data[:cache][name].data(:CNAME).first) ?
-                DNS::Named::Cacheable.new(tmp.value.to_s, tmp.ttl)
+              DNS::Named::Cacheable.new(tmp.value.to_s, tmp.ttl)
               : nil
             )]
         else
           $data[:cache][name].clear :AAAA
         end
 
-        ips   = nil
+        ips   = []
         cname = nil
 
         domain = $config.domains.find {|domain|
@@ -279,7 +265,7 @@ module Commands
         }
 
         if domain
-          tmp = domain.ips.select {|ip| ip.version == 4}.map {|ip| DNS::Named::Cacheable.new(ip.to_s, domain.ttl)}
+          tmp = domain.ips.select {|ip| ip.version == 6}.map {|ip| DNS::Named::Cacheable.new(ip.to_s, domain.ttl)}
 
           if !tmp.empty?
             tmp.each {|ip|
@@ -301,10 +287,10 @@ module Commands
             ips = []
 
             domain.addresses.each {|address|
-              tmp = self.resolve(address)
+              tmp, = self.resolve(address)
 
               if tmp
-                ips = ips.concat tmp.each {|ip|
+                ips = ips.concat tmp.flatten.each {|ip|
                   ip.ttl = domain.ttl
                 }
               end
@@ -312,7 +298,7 @@ module Commands
           end
 
           if domain.name
-            cname = DNS::Named::Cacheable.new(DNS::ResourceRecord.new {|rr|
+            cname = DNS::Named::Cacheable.new($data[:cache][name].update(DNS::ResourceRecord.new {|rr|
               rr.name  = name
               rr.class = :IN
               rr.type  = :CNAME
@@ -320,7 +306,7 @@ module Commands
               rr.ttl = domain.ttl
 
               rr.data = DNS::ResourceRecord::IN::CNAME.new(domain.name)
-            }.data.to_s, domain.ttl)
+            }).data.to_s, domain.ttl)
           end
         else
           response = $client.query(DNS::Question.new {|q|
@@ -346,9 +332,8 @@ module Commands
             cname = (tmp = response.answers.find {|rr|
               if rr.type == :CNAME
                 $data[:cache][name].update rr
+
                 true
-              else
-                false
               end
             }) ? DNS::Named::Cacheable.new(tmp.data.to_s, tmp.ttl) : nil
           end
@@ -376,17 +361,6 @@ module Commands
             h.class = :QUERY
 
             h.status = :NXDOMAIN
-          },
-
-          [question]
-        )
-      elsif ips == nil
-        DNS::Message.new(
-          DNS::Header.new {|h|
-            h.id = message.header.id
-
-            h.type  = :RESPONSE
-            h.class = :QUERY
           },
 
           [question]

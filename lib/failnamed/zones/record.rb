@@ -1,4 +1,3 @@
-#--
 # Copyleft meh. [http://meh.doesntexist.org | meh@paranoici.org]
 #
 # This file is part of failnamed.
@@ -15,53 +14,42 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with failnamed. If not, see <http://www.gnu.org/licenses/>.
-#++
 
-require 'failnamed/cacheable'
+module DNS; class Named; class Zones < Hash
 
-module DNS
+class Record
+  attr_reader :zone, :options
 
-module Named
+	def initialize (zone, options = {} &block)
+    @zone    = zone
+		@options = options
+		@matches = []
 
-class Cache
+		instance_eval &block
+	end
 
-class Resources
-  attr_reader :name
+	def matches (what)
+		@matches << what
+	end
 
-  def initialize (name)
-    @name = name.to_sym
+	def matches? (string)
+		@matches.any? {|matcher|
+			if matches.is_a?(Regexp)
+				string.match(matcher)
+			else
+				string.match(/#{Regexp.escape(matcher.to_s).gsub('\*', '.*?').gsub('\?', '.')}/i)
+			end
+		}
+	end
 
-    @new       = true
-    @resources = []
-  end
-
-  def << (resource)
-    old!
-
-    @resources << Cacheable.new(resource, resource.ttl)
-  end
-
-  def valid?
-    return false if @new
-
-    @resources.all? {|c|
-      c.valid?
-    }
-  end
-
-  def data
-    @resources.map {|c|
-      Cacheable.new(c.value.data, c.ttl)
-    }
-  end
-
-  def old!
-    @new = false
-  end
+	def to_dns (name, klass, type)
+		DNS::ResourceRecord.new {|rr|
+			rr.name  = name
+			rr.class = klass
+			rr.type  = type
+			rr.ttl   = options[:ttl]
+		}
+	end
 end
 
-end
-
-end
-
-end
+end; end; end

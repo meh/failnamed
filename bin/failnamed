@@ -1,60 +1,23 @@
 #! /usr/bin/env ruby
-# Copyleft meh. [http://meh.doesntexist.org | meh@paranoici.org]
-#
-# This file is part of failnamed.
-#
-# failnamed is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published
-# by the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# failnamed is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with failnamed. If not, see <http://www.gnu.org/licenses/>.
+require 'optparse'
+require 'failnamed'
 
-require 'faildns/server'
-require 'faildns/client'
-require 'optimus'
+options = {}
 
-require 'failnamed/config'
-require 'failnamed/cache'
+OptionParser.new do |o|
+	o.on '-c', '--config PATH', 'path to the config file' do |value|
+		options[:config] = value
+	end
+end.parse!
 
-opt = Optimus.new {|o|
-  o.set(
-    :type => :numeric,
+DNS::Named.new(options[:config]).start
 
-    :long  => 'port',
-    :short => 'p',
-
-    :default => 53
-  )
-
-  o.set(
-    :type => :string,
-
-    :long  => 'host',
-    :short => 'h',
-
-    :default => '0.0.0.0'
-  )
-
-  o.set(
-    :type => :string,
-
-    :long  => 'configuration',
-    :short => 'c'
-  )
-}
 
 $config = DNS::Named::Config.new opt.params[:c]
 
 $server = DNS::Server.new {|s|
-    s.options[:host] = $config.bind.host || opt.params[:host]
-    s.options[:port] = $config.bind.port || opt.params[:port]
+  s.options[:host] = $config.bind.host || opt.params[:host]
+  s.options[:port] = $config.bind.port || opt.params[:port]
 }
 
 $client = DNS::Client.new {|c|
@@ -401,7 +364,7 @@ module Commands
   end
 end
 
-$server.register :input, lambda {|socket, message|
+$server.input do |socket, message|
   question = message.questions.first
   method   = Commands.const_get(question.class.to_sym).method(question.type.to_sym) rescue nil
 
@@ -423,6 +386,6 @@ $server.register :input, lambda {|socket, message|
   end
 
   socket.send method.call(message)
-}
+end
 
 $server.start

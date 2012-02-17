@@ -1,4 +1,3 @@
-#--
 # Copyleft meh. [http://meh.doesntexist.org | meh@paranoici.org]
 #
 # This file is part of failnamed.
@@ -15,31 +14,27 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with failnamed. If not, see <http://www.gnu.org/licenses/>.
-#++
 
-module DNS
+module DNS; class Named; class Zones < Hash; class IN
 
-module Named
+class A < Record
+	def initialize (zone, what, options = {}, &block)
+		super(zone, { ttl: 3600 }.merge(options), &block)
 
-class Cacheable
-  attr_accessor :value, :ttl
+		@what = what
+	end
 
-  def initialize (value, ttl)
-    @modified = Time.now
+	def to_dns (name)
+		super(name, :IN, :A).tap {|rr|
+			rr.data = if DNS::IP.valid?(@what)
+				DNS::ResourceRecord::IN::A.new(@what)
+			else
+				return unless ip = zone.client.resolve(@what).first
 
-    @value = value
-    @ttl   = ttl
-  end
-
-  def valid?
-    (@modified.to_i + @ttl) > Time.now.to_i
-  end
-  
-  def inspect
-    "#<Cacheable:(#{@ttl}) #{@value.inspect}>"
-  end
+				DNS::ResourceRecord::IN::A.new(ip)
+			end
+		}
+	end
 end
 
-end
-
-end
+end; end; end; end

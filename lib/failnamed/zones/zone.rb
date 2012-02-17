@@ -1,4 +1,3 @@
-#--
 # Copyleft meh. [http://meh.doesntexist.org | meh@paranoici.org]
 #
 # This file is part of failnamed.
@@ -15,24 +14,38 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with failnamed. If not, see <http://www.gnu.org/licenses/>.
-#++
 
-require 'failnamed/cache/domain'
+require 'failnamed/zones/matchable'
 
-module DNS
+require 'failnamed/zones/IN'
 
-module Named
+module DNS; class Named; class Zones < Hash
 
-class Cache
-  def initialize
-    @data = {}
-  end
+class Zone < Hash
+	def initialize (&block)
+		default_proc = proc { |h, k| h[k] = [] }
+	end
 
-  def [] (name)
-    (@data[name] ||= Domain.new(name, $data[:options][:ttl]))
-  end
+	def IN (&block)
+		IN.new(self, &block)
+	end
+
+	alias internet IN
+	alias net      IN
+
+	Zones::IN.constants.each {|name|
+		define_method name do |*args, &block|
+			self[name] << Zone.const_get(name).new(*args, &block)
+		end
+	}
+
+	def ip (version = 4, what, &block)
+		if version == 4
+			A(what, &block)
+		elsif version == 6
+			AAAA(what, &block)
+		end
+	end
 end
 
-end
-
-end
+end; end; end

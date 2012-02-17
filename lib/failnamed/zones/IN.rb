@@ -1,4 +1,3 @@
-#--
 # Copyleft meh. [http://meh.doesntexist.org | meh@paranoici.org]
 #
 # This file is part of failnamed.
@@ -15,40 +14,23 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with failnamed. If not, see <http://www.gnu.org/licenses/>.
-#++
 
-module DNS
+require 'failnamed/zones/IN/A'
 
-module Named
+module DNS; class Named; class Zones < Hash
 
-class Domain
+class IN
+	attr_reader :zone
 
-class Match
-  attr_reader :type, :match, :regexp
+	def initialize (zone, &block)
+		@zone = zone
+	end
 
-  def initialize (type, match)
-    @type  = type
-    @match = match
-
-    case @type
-      when 'regexp'
-        @regexp = Regexp.new(@match)
-
-      when 'wildcard'
-        @regexp = Regexp.new('^' + Regexp.escape(@match).gsub(/\\\*/, '.*').gsub(/\\\?/, '.') + '$')
-
-      else
-        @regexp = Regexp.new ''
-    end
-  end
-
-  def test (domain)
-    !!domain.to_s.match(@regexp)
-  end
+	constants.each {|name|
+		define_method name do |*args, &block|
+			zone[name] << IN.const_get(name).new(*args, &block)
+		end
+	}
 end
 
-end
-
-end
-
-end
+end; end; end
